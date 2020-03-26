@@ -2,6 +2,9 @@
 
 import random
 import math
+import pandas as pd
+import xlwt
+from openpyxl import Workbook
 
 # ----------------------< Game rules constants  >-----------------------------------------------------------------------
 
@@ -867,6 +870,7 @@ class DiceGameController:
         output_str += str(self._dice_game_model)
         return output_str
 
+    @property
     def get_model(self):
         return self._dice_game_model
 
@@ -1008,7 +1012,7 @@ class DiceGameStatisticsAnalyse:
         self._mean_scoring /= self._nb_turn
 
     def pretty_print_occurrence_distribution(self):
-        pretty_occurrence_distribution = dict(sorted(self._score_distribution.occurrence_distribution.items()))
+        pretty_occurrence_distribution = dict(sorted(self._score_distribution._occurrence_distribution.items()))
 
         print('Tableau d\'occurences : ')
         for key in pretty_occurrence_distribution:
@@ -1024,7 +1028,157 @@ class DiceGameStatisticsAnalyse:
         print('\n')
 
 
-# ----------------------< Class defining a new struct >---------------------------------------------------------------
+# ----------------------< Class handling game stats >---------------------------------------------------------------
+# constructor parameters :
+#   nb_dice                                     List of players name
+#   nb_turn                                     Total number of dices in the game set (default->DEFAULT_DICES_NB)
+#   interval                                    Target score to win (default->DEFAULT_TARGET_SCORE)
+#
+# public methods :
+#
+#   launch_analyse()                             Launch nb_turn turn and update the stats
+#   print_occurrence_distribution()              Print the occurrence dict
+# ----------------------------------------------------------------------------------------------------------------------
+class DiceGameDistributionAnalyse:
+    def __init__(self, nb_turn, interval, nb_dice=DEFAULT_DICES_NB):
+        self._nb_dice = nb_dice
+        self._nb_turn = nb_turn
+        self._interval = interval
+
+        self._dice_game_turn = DiceGameTurn(nb_dice)
+
+        self._roll_score_distribution = OccurrenceDistribution(interval)
+        self._turn_score_distribution = OccurrenceDistribution(interval)
+        self._turn_nb_roll_distribution = OccurrenceDistribution(1)
+        self._turn_nb_full_roll_distribution = OccurrenceDistribution(1)
+        self._turn_nb_bonus_distribution = OccurrenceDistribution(1)
+        self._turn_nb_dices_fail_distribution = OccurrenceDistribution(1)
+        self._turn_nb_dice_to_roll_distribution = OccurrenceDistribution(1)
+
+    @property
+    def nb_turn(self):
+        return self._nb_turn
+
+    @property
+    def roll_score_distribution(self):
+        return self._roll_score_distribution
+
+    @property
+    def turn_score_distribution(self):
+        return self._turn_score_distribution
+
+    @property
+    def turn_nb_roll_distribution(self):
+        return self._turn_nb_roll_distribution
+
+    @property
+    def turn_nb_full_roll_distribution(self):
+        return self._turn_nb_full_roll_distribution
+
+    @property
+    def turn_nb_bonus_distribution(self):
+        return self._turn_nb_bonus_distribution
+
+    @property
+    def turn_nb_dices_fail_distribution(self):
+        return self._turn_nb_dices_fail_distribution
+
+    @property
+    def turn_nb_dice_to_roll_distribution(self):
+        return self._turn_nb_dice_to_roll_distribution
+
+    def launch_analyse(self):
+        def play_until_fail():
+            nb_dice_to_roll = self._dice_game_turn.nb_dices_to_roll
+            self._turn_nb_dice_to_roll_distribution.push(nb_dice_to_roll)
+
+            self._dice_game_turn.roll_dices_and_count_roll_score()
+
+            roll_score = self._dice_game_turn.roll_score
+            self._roll_score_distribution.push(roll_score)
+
+            while self._dice_game_turn.roll_score != 0:
+                nb_dice_to_roll = self._dice_game_turn.nb_dices_to_roll
+                self._turn_nb_dice_to_roll_distribution.push(nb_dice_to_roll)
+
+                self._dice_game_turn.roll_dices_and_count_roll_score()
+
+                # Case it's a lost roll, we push the nb_dice of this roll
+                if self._dice_game_turn.roll_score == 0:
+                    self._turn_nb_dices_fail_distribution.push(nb_dice_to_roll)
+
+                roll_score = self._dice_game_turn.roll_score
+                self._roll_score_distribution.push(roll_score)
+
+        turn_index = 0
+        while turn_index < self._nb_turn:
+            play_until_fail()
+
+            turn_score = self._dice_game_turn.turn_lost_score
+            turn_nb_roll = self._dice_game_turn.turn_statistics.turn_nb_roll
+            turn_nb_full_roll = 0
+            turn_nb_bonus = self._dice_game_turn.turn_statistics.turn_nb_bonus
+
+            self._turn_score_distribution.push(turn_score)
+            self._turn_nb_roll_distribution.push(turn_nb_roll)
+            self._turn_nb_full_roll_distribution.push(turn_nb_full_roll)
+            self._turn_nb_bonus_distribution.push(turn_nb_bonus)
+
+            turn_index += 1
+
+            # Reset all the turn's parameters to 0
+            self._dice_game_turn.prepare_for_next_turn()
+
+
+# ----------------------< Class generating excel file >---------------------------------------------------------------
+# constructor parameters :
+#   statistics                                   DiceGameDistributionAnalyse instance
+#
+# public methods :
+#
+#   export_excel()                               Create an excel with all the game stats
+# ----------------------------------------------------------------------------------------------------------------------
+class ExcelStatsGenerator:
+    def __init__(self, distribution_statistics):
+        self._distribution_statistics = distribution_statistics
+
+    def export_excel(self):
+        statistics = pd.DataFrame(
+            {
+                '': ['Nb Turns',
+                     'Roll Score',
+                     'Turn Score',
+                     'Turn Nb Roll',
+                     'Turn Nb Full Roll',
+                     'Turn Nb Bonus',
+                     'Roll Nb Dice Fail Roll',
+                     'Roll Nb Dice To Roll'],
+
+                'Max': [self._distribution_statistics.nb_turn,
+                        self._distribution_statistics.roll_score_distribution.get_max(),
+                        self._distribution_statistics.turn_score_distribution.get_max(),
+                        self._distribution_statistics.turn_nb_roll_distribution.get_max(),
+                        self._distribution_statistics.turn_nb_full_roll_distribution.get_max(),
+                        self._distribution_statistics.turn_nb_bonus_distribution.get_max(),
+                        self._distribution_statistics.turn_nb_dices_fail_distribution.get_max(),
+                        self._distribution_statistics.turn_nb_dice_to_roll_distribution.get_max()],
+
+                'Mean': ['',
+                         self._distribution_statistics.roll_score_distribution.get_mean(),
+                         self._distribution_statistics.turn_score_distribution.get_mean(),
+                         self._distribution_statistics.turn_nb_roll_distribution.get_mean(),
+                         self._distribution_statistics.turn_nb_full_roll_distribution.get_mean(),
+                         self._distribution_statistics.turn_nb_bonus_distribution.get_mean(),
+                         self._distribution_statistics.turn_nb_dices_fail_distribution.get_mean(),
+                         self._distribution_statistics.turn_nb_dice_to_roll_distribution.get_mean()],
+            })
+
+        df = pd.DataFrame(statistics, columns=['', 'Max', 'Mean'])
+
+        df.to_excel(r'C:\Users\thoma\Desktop\export_dataframe.xlsx', index=False, header=True)
+
+
+# ----------------------< Class defining a new struct  >---------------------------------------------------------------
 # constructor parameters :
 #   interval                                     Interval of the distribution
 #   occurrence_distribution                      The dictionary used to store the score occurrence
@@ -1055,12 +1209,33 @@ class OccurrenceDistribution:
         return self._interval
 
     def push(self, value):
-        score_occurrence_index = math.ceil(value / self._interval)
+        value_occurrence_index = math.ceil(value / self._interval)
 
-        if score_occurrence_index in self._occurrence_distribution:
-            self._occurrence_distribution[score_occurrence_index] += 1
+        if value_occurrence_index in self._occurrence_distribution:
+            self._occurrence_distribution[value_occurrence_index] += 1
         else:
-            self._occurrence_distribution[score_occurrence_index] = 1
+            self._occurrence_distribution[value_occurrence_index] = 1
+
+    def get_max(self):
+        sorted_occurrence_distribution = dict(sorted(self._occurrence_distribution.items()))
+        if len(sorted_occurrence_distribution.keys()) > 0:
+            max_key = list(sorted_occurrence_distribution.keys())[-1]
+            max_key_occurrence = sorted_occurrence_distribution.get(max_key)
+            return max_key * self._interval
+        else:
+            return 0
+
+    def get_mean(self):
+        occurrence_value_sum = 0
+        occurrence_count = 0
+        for occurrence in self._occurrence_distribution:
+            occurrence_value_sum += self._occurrence_distribution[occurrence] * self._interval * occurrence
+            occurrence_count += self._occurrence_distribution[occurrence]
+
+        if occurrence_value_sum != 0 and occurrence_count != 0:
+            return occurrence_value_sum / occurrence_count
+        else:
+            return 0
 
 
 game_target_score = 5000
@@ -1071,12 +1246,19 @@ game_players_names_list = ['Stéphane', 'Romain', 'François', 'Isabelle', 'Chri
 #       - Remaining dice to roll threshold  (_choice_critter_value < 0)
 game_choice_critter_value = 0
 
-#dice_controller = DiceGameController(game_players_names_list, nb_dices=5, target_score=game_target_score, verbose=True, interactive=False, choice_critter_value=game_choice_critter_value)
+# dice_controller = DiceGameController(
+#   game_players_names_list,
+#   nb_dices=5,
+#   target_score=game_target_score,
+#   verbose=True, interactive=False,
+#   choice_critter_value=game_choice_critter_value)
 
-#dice_controller.run_full_game()
+# dice_controller.run_full_game()
 
-dice_statistiques = DiceGameStatisticsAnalyse(1000, 50, 5)
+nb_turn = 10000000
+dice_distribution_statistics = DiceGameDistributionAnalyse(nb_turn, 50, 5)
 
-dice_statistiques.launch_analyse()
+dice_distribution_statistics.launch_analyse()
 
-print(dice_statistiques)
+excel = ExcelStatsGenerator(dice_distribution_statistics)
+excel.export_excel()
